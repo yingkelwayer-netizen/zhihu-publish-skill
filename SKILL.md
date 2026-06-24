@@ -141,7 +141,6 @@ $XB = '<你的xbrowser路径>/xb.cjs'
 ---
 
 ## 二、工具链
-+++++++ REPLACE</task_progress>
 
 | 工具 | 用途 | 命令 |
 |------|------|------|
@@ -391,9 +390,12 @@ sessions_send(
 
 ## 七、发布回答
 
-### 回答编辑器：Draft.js，只能keyboard type逐行输入
+### 回答编辑器：Draft.js（keyboard type 逐行输入最稳）
 
-❌ fill/execCommand/clipboard paste全部无效
+> ⚠️ 回答编辑器与文章编辑器同为 Draft.js，但回答框嵌套更深、焦点更易丢失。
+> - **验证最稳**：keyboard type 逐行输入（下方主流程）。
+> - **可尝试加速**：`execCommand('insertHTML') + InputEvent`（同「发布文章」主流程），若发布按钮被激活则成功；失败则回退 type。
+> - **不可用**：fill、纯 clipboard paste、直接 `innerHTML=`。
 
 ```powershell
 $NODE = "node"
@@ -447,30 +449,84 @@ for ($i=0; $i -lt $paragraphs.Count; $i++) {
 
 ## 八、发布文章
 
-### 文章编辑器：支持Ctrl+V粘贴
+### ⚠️ 文章编辑器原理（必读，发布成败关键）
+
+知乎文章/回答编辑器基于 **React + Draft.js**，这是发布按钮能否激活的核心：
+
+- **直接操作 DOM 不会触发状态更新**：用 `innerHTML=`、`innerText=` 等方式写入，DOM 看起来有字，但 Draft.js 内部 `EditorState` 仍为空 → **发布按钮保持灰色/点击无反应**。
+- **React 感知内容变化的唯一可靠方式** = `document.execCommand('insertHTML')` + 手动派发 `InputEvent`：
+  1. `execCommand('insertHTML', false, html)` 在 contenteditable 区域插入 HTML，触发浏览器原生编辑行为（Draft.js 能捕获）。
+  2. 紧接着 `dispatchEvent(new InputEvent('input', {inputType:'insertFromPaste', bubbles:true}))` 让 Draft.js 的 `onInput` 监听器同步更新 `EditorState` → **发布按钮被激活**。
+- **标题输入框是原生 `<textarea>`**：Playwright 原生 `fill` 命令对其有效（`fill` 内部派发完整的 input 事件序列，React 能正常捕获），**无需手动 hack 原生 setter**。
+
+### 主流程：fill 标题 + execHTML 正文（⭐ 推荐）
 
 ```powershell
+$NODE = "node"
+$XB   = '<你的xbrowser路径>/xb.cjs'
+$title = "你的文章标题"
+# 正文用 HTML 片段，可保留加粗/引用/列表
+$html  = "<p>第一段正文，首段必含核心关键词。</p><p><strong>加粗重点</strong>。</p><blockquote>法条引用</blockquote><ol><li>步骤一</li></ol>"
+
 # 1. 打开写作页
 & $NODE $XB run --browser chrome open 'https://zhuanlan.zhihu.com/write'
 & $NODE $XB run --browser chrome wait --load networkidle
 
-# 2. 填标题（React兼容）
-& $NODE $XB run --browser chrome eval "var t=document.querySelector('textarea.Input');var s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;s.call(t,'标题');t.dispatchEvent(new Event('input',{bubbles:true}));t.value"
+# 2. 填标题（⭐ Playwright fill 命令，对原生 textarea 有效，自动触发 React input 事件）
+& $NODE $XB run --browser chrome fill 'textarea.Input' $title
 
-# 3. 剪贴板粘贴正文
-Set-Clipboard -Value $content
+# 3. 注入正文（execCommand('insertHTML') + InputEvent，让 React/Draft.js 感知并激活发布按钮）
+#    先转义 HTML 中的单引号，避免破坏 JS 字符串
+$escapedHtml = $html -replace "'","\'"
+$injectJs = "(function(){var ed=document.querySelector('div[contenteditable=true]')||document.querySelector('.public-DraftEditor-content');if(!ed){return 'no-editor'};ed.focus();document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);document.execCommand('insertHTML',false,'$escapedHtml');ed.dispatchEvent(new InputEvent('input',{bubbles:true,cancelable:true,inputType:'insertFromPaste',data:null}));return ed.innerText.length})()"
+$len = & $NODE $XB run --browser chrome eval $injectJs
+Write-Host "注入后字数: $len"
+
+# 4. 验证发布按钮已激活（应返回 btn-active，即 disabled 已消失）
+& $NODE $XB run --browser chrome eval "(function(){var b=document.querySelectorAll('button');for(var i=0;i<b.length;i++){if(b[i].textContent.trim()==='发布'){return b[i].disabled?'btn-disabled':'btn-active'}}return 'no-btn'})()"
+
+# 5. 发布
+& $NODE $XB run --browser chrome eval "(function(){var b=document.querySelectorAll('button');for(var i=0;i<b.length;i++){if(b[i].textContent.trim()==='发布'){b[i].click();return 'ok'}}return 'fail'})()"
+# URL 应跳转 zhuanlan.zhihu.com/p/<ID>
+& $NODE $XB run --browser chrome eval "window.location.href"
+```
+
+### 备选方案 A：剪贴板粘贴（execCommand 被禁用时回退）
+
+> 当 `execCommand('insertHTML')` 因 Chrome 策略被禁用（返回 false 或字数为 0）时回退到此方案。
+
+```powershell
+Set-Clipboard -Value $html
 & $NODE $XB run --browser chrome eval "document.querySelector('div[contenteditable=true]').focus()"
 Start-Sleep -Milliseconds 500
 & $NODE $XB run --browser chrome press Control+v
 Start-Sleep -Seconds 3
-
-# 4. 验证+发布
-& $NODE $XB run --browser chrome eval "document.querySelector('div[contenteditable=true]').innerText.length"
-& $NODE $XB run --browser chrome eval "(function(){var b=document.querySelectorAll('button');for(var i=0;i<b.length;i++){if(b[i].textContent.trim()==='发布'){b[i].click();return 'ok'}}return 'fail'})()"
-# URL应跳转 zhuanlan.zhihu.com/p/<ID>
 ```
 
-### HTML格式粘贴（保留加粗/引用/列表）
+### 备选方案 B：keyboard type 逐行输入（兜底，最慢但最稳）
+
+> 发布按钮仍灰色时，用逐行 type 强制 Draft.js 走正常输入路径（同「发布回答」方案）。
+
+```powershell
+$plain = $html -replace '<[^>]+>',''
+$paragraphs = $plain -split "`r?`n`r?`n"
+for ($i=0; $i -lt $paragraphs.Count; $i++) {
+    $para = $paragraphs[$i].Trim()
+    if ($para.Length -eq 0) { continue }
+    foreach ($line in ($para -split "`r?`n")) {
+        $line = $line.TrimEnd()
+        if ($line.Length -eq 0) { continue }
+        & $NODE $XB run --browser chrome keyboard type $line
+        & $NODE $XB run --browser chrome press Enter
+    }
+    & $NODE $XB run --browser chrome press Enter
+}
+```
+
+### 备选方案 C：ClipboardEvent 派发（保留完整 HTML 格式，不依赖系统剪贴板）
+
+> 通过构造 `ClipboardEvent('paste')` 直接派发，可保留加粗/引用/列表且不抢占系统剪贴板。
+> 但部分场景 Draft.js 可能不感知 → **建议优先用主流程的 `execCommand` 方案**，此为补充。
 
 ```powershell
 $html = "<p><strong>标题</strong></p><blockquote>法条</blockquote><ol><li>步骤</li></ol>"
@@ -508,6 +564,10 @@ $pasteJs = "(function(){var h='$html';var t=h.replace(/<[^>]+>/g,'');var dt=new 
 | type后字数为0 | 先eval聚焦编辑器 |
 | Ctrl+V无内容 | eval聚焦→等500ms→再粘贴 |
 | 发布按钮无反应 | Draft.js认为空，重新type |
+| 发布按钮灰色/未激活 | 直接改DOM无效；用 `execCommand('insertHTML')+InputEvent` 重注正文，详见「八、发布文章」编辑器原理 |
+| execCommand insertHTML 失效 | Chrome 禁用了 execCommand → 回退备选方案 A（剪贴板粘贴）或 B（keyboard type） |
+| fill 标题失败 | 确认选择器是 `textarea.Input`；仍失败则回退 eval + 原生 setter + input 事件 |
+| 注入后字数为 0 | 编辑器未聚焦，先 `ed.focus()` 再 execCommand；或选择器未命中 |
 | Markdown符号显示 | 输入前去掉##和** |
 | opencli search报错 | 改用xb打开搜索页 |
 | ref失效 | 重新snapshot |
