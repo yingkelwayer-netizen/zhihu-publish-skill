@@ -9,7 +9,7 @@
 把下面这句话发给你的 知乎策略师（Agent）：
 
 ```
-帮我安装 zhihu-content-publish 技能：克隆 https://github.com/yingkelwayer-netizen/zhihu-content-publish 到本地，读取其中的 SKILL.md，按里面的「环境配置引导」章节逐项帮我完成环境自检和配置，缺什么引导我装什么，全部通过后告诉我可以开始用了。
+帮我安装 zhihu-publish-skill 技能：克隆 https://github.com/yingkelwayer-netizen/zhihu-publish-skill 到本地，读取其中的 SKILL.md，按里面的「环境配置引导」章节逐项帮我完成环境自检和配置，缺什么引导我装什么，全部通过后告诉我可以开始用了。
 ```
 
 小龙虾会自动：
